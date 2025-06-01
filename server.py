@@ -1,6 +1,8 @@
 import asyncio
 from aiohttp import web
 from config import CAT_FAVORITE_FOODS, UDP_PORT, TCP_PORT, WEB_PORT
+import re
+
 
 cat_stats = {
     'feed': {},
@@ -8,32 +10,83 @@ cat_stats = {
     'fed_users': set()
 }
 
-# UDP Server
+
 class CatUDPProtocol(asyncio.DatagramProtocol):
     def __init__(self):
-        self.fragments = {}
+        self.sessions = {}  # addr: { 'received': {}, 'next_expected': int, 'last_fragment': str or None }
+        self.fragment_pattern = re.compile(r'~(\d+)$')
+        self.transport = None
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    @staticmethod
+    def _has_all_fragments(session):
+        return session['received'] and len(session['received']) == session['next_expected'] and session['last_fragment'] is not None
 
     def datagram_received(self, data, addr):
         message = data.decode()
-        if message.endswith('~'):
-            full_msg = self.fragments.pop(addr, '') + message
-            user, food = full_msg.strip('~').split(' - ')
-            response = self.feed_cat(user.strip('@'), food)
-            self.transport.sendto(response.encode(), addr)
-        elif message[-1].isdigit():
-            frag_id = int(message[-1])
-            self.fragments[addr] = self.fragments.get(addr, '') + message[:-1]
-            self.transport.sendto(f"The Cat is amused by #{frag_id}".encode(), addr)
 
-    def feed_cat(self, user, food):
+        match = self.fragment_pattern.search(message)
+        is_fragment = bool(match)
+
+        if not message.endswith('~') and not is_fragment:
+            session = self.sessions.get(addr)
+            if session:
+                last_seq = session['next_expected'] - 1
+                response = f"The Cat is amused by #{last_seq}"
+                self.transport.sendto(response.encode(), addr)
+            return
+
+        if is_fragment or self.sessions.get(addr):
+            # SESSION MODE
+            session = self.sessions.setdefault(addr, {
+                'received': {},
+                'next_expected': 0,
+                'last_fragment': None,
+            })
+
+            if is_fragment:
+                frag_id = int(match.group(1))
+                content = message[:match.start()]
+                session['received'][frag_id] = content
+
+                while session['next_expected'] in session['received']:
+                    session['next_expected'] += 1
+            elif message.endswith('~'):
+                session['last_fragment'] = message.strip('~')
+
+            if not self._has_all_fragments(session):
+                response = f"The Cat is amused by #{session['next_expected'] - 1}"
+                self.transport.sendto(response.encode(), addr)
+                return
+
+            try:
+                parts = [session['received'][i] for i in range(session['next_expected'])]
+                full_msg = ''.join(parts) + session['last_fragment']
+                user, food = full_msg.split(' - ')
+                response = self.feed_cat(user.strip('@'), food)
+            except Exception:
+                response = "Invalid format"
+
+            self.transport.sendto(response.encode(), addr)
+            self.sessions.pop(addr, None)
+        else:
+            # NON-SESSION MODE
+            try:
+                user, food = message.split(' - ')
+                response = self.feed_cat(user.strip('@'), food.strip('~'))
+            except Exception:
+                response = "Invalid format"
+            self.transport.sendto(response.encode(), addr)
+
+    @staticmethod
+    def feed_cat(user, food):
         cat_stats['feed'].setdefault(user, []).append(food)
         if food in CAT_FAVORITE_FOODS:
             cat_stats['fed_users'].add(user)
             return "Eaten by the Cat"
         return "Ignored by the Cat"
-
-    def connection_made(self, transport):
-        self.transport = transport
 
 
 # TCP Server
@@ -47,14 +100,22 @@ async def handle_tcp(reader, writer):
         data = await reader.read(100)
         if not data:
             break
-        buffer += data.decode()
 
+        buffer += data.decode()
         responses = []
+
         while '~' in buffer:
             segment, buffer = buffer.split('~', 1)
+            if not segment.startswith('@'):
+                continue
             user = segment.strip('@')
             count += 1
-            status = "Tolerated by the Cat" if user in cat_stats['fed_users'] else "Scratched by the Cat"
+
+            if user in cat_stats['fed_users']:
+                status = "Tolerated by the Cat"
+            else:
+                status = "Scratched by the Cat"
+
             cat_stats['pet'].setdefault(user, []).append(status)
             responses.append(status)
 
@@ -103,6 +164,7 @@ async def main():
 
     async with tcp_server:
         await tcp_server.serve_forever()
+
 
 if __name__ == '__main__':
     asyncio.run(main())
