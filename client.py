@@ -1,11 +1,31 @@
 import socket
 import asyncio
 
-def feed_cat_udp(server_ip, port, message):
+def feed_cat_udp(server_ip, port, message, max_chunk_size=8):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.sendto(message.encode(), (server_ip, port))
-    data, _ = sock.recvfrom(1024)
-    print("Response:", data.decode())
+    sock.settimeout(2)
+
+    chunks = [message[i:i + max_chunk_size] for i in range(0, len(message), max_chunk_size)]
+
+    if len(chunks) > 1:
+        for i, chunk in enumerate(chunks):
+            fragment = f"{chunk}~{i}"
+            sock.sendto(fragment.encode(), (server_ip, port))
+            try:
+                data, _ = sock.recvfrom(1024)
+                print(f"Response to fragment #{i}:", data.decode())
+            except socket.timeout:
+                print(f"No response for fragment #{i}")
+    else:
+        sock.sendto(message.encode(), (server_ip, port))
+        try:
+            data, _ = sock.recvfrom(1024)
+            print("Response:", data.decode())
+        except socket.timeout:
+            print("No response from server")
+
+    sock.close()
+
 
 async def pet_cat_tcp(server_ip, port, ids):
     reader, writer = await asyncio.open_connection(server_ip, port)
