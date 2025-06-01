@@ -1,14 +1,12 @@
 import asyncio
 from aiohttp import web
-from config import CAT_FAVORITE_FOODS, UDP_PORT, TCP_PORT, WEB_PORT
+from config import *
 import re
+from html_page import *
+from dnslib.server import DNSServer, DNSHandler, BaseResolver
+from dnslib import DNSRecord, RR, QTYPE, SRV, A
+import socket
 
-
-cat_stats = {
-    'feed': {},
-    'pet': {},
-    'fed_users': set()
-}
 
 
 class CatUDPProtocol(asyncio.DatagramProtocol):
@@ -129,16 +127,29 @@ async def handle_tcp(reader, writer):
             break
 
 
-# Web Interface
-async def stats_page(request):
-    lines = ["<h1>Cat Stats</h1>", "<h2>Feeding</h2>", "<ul>"]
-    for user, foods in cat_stats['feed'].items():
-        lines.append(f"<li>{user}: {foods}</li>")
-    lines.append("</ul><h2>Petting</h2><ul>")
-    for user, results in cat_stats['pet'].items():
-        lines.append(f"<li>{user}: {results}</li>")
-    lines.append("</ul>")
-    return web.Response(content_type='text/html', text='\n'.join(lines))
+class CatDNSResolver(BaseResolver):
+    def resolve(self, request, handler):
+        reply = request.reply()
+        qname = str(request.q.qname)
+        qtype = QTYPE[request.q.qtype]
+
+        if qtype == 'SRV':
+            if qname == "_feed-the-cat._udp.example.com.":
+                reply.add_answer(RR(qname, QTYPE.SRV, ttl=86400, rdata=SRV(5, 5, UDP_PORT, "your-cat-server.example.com.")))
+            elif qname == "_pet-the-cat._tcp.example.com.":
+                reply.add_answer(RR(qname, QTYPE.SRV, ttl=86400, rdata=SRV(5, 5, TCP_PORT, "your-cat-server.example.com.")))
+        elif qtype == 'A' and qname == "your-cat-server.example.com.":
+            ip = socket.gethostbyname(socket.gethostname())
+            reply.add_answer(RR(qname, QTYPE.A, ttl=86400, rdata=A(ip)))
+
+        return reply
+
+
+def start_dns_server():
+    resolver = CatDNSResolver()
+    dns_server = DNSServer(resolver, address="0.0.0.0", port=DNS_PORT)
+    dns_server.start_thread()
+    print(f"DNS server started on port {DNS_PORT} (TCP)")
 
 
 async def start_web_server():
@@ -161,6 +172,9 @@ async def main():
 
     print("Starting Web Server")
     await start_web_server()
+
+    print("Starting DNS Server")
+    start_dns_server()
 
     async with tcp_server:
         await tcp_server.serve_forever()
