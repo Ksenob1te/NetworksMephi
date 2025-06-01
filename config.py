@@ -1,0 +1,4 @@
+CAT_FAVORITE_FOODS = {"Milk", "Meat", "Fish"}
+UDP_PORT = 12345
+TCP_PORT = 54321
+WEB_PORT = 8080
