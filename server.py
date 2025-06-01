@@ -89,7 +89,6 @@ class CatUDPProtocol(asyncio.DatagramProtocol):
 
 # TCP Server
 async def handle_tcp(reader, writer):
-    addr = writer.get_extra_info('peername')
     buffer = ''
     tired_threshold = 6
     count = 0
@@ -149,7 +148,7 @@ def start_dns_server():
     resolver = CatDNSResolver()
     dns_server = DNSServer(resolver, address="0.0.0.0", port=DNS_PORT)
     dns_server.start_thread()
-    print(f"DNS server started on port {DNS_PORT} (TCP)")
+    print(f"DNS server started on port {DNS_PORT}")
 
 
 async def start_web_server():
